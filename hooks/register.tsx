@@ -200,53 +200,6 @@ export const register: Register = on => {
     const fit = (line: string): string =>
       line.length > width ? line.slice(0, width - 1) + '~' : line === '' ? ' ' : line
 
-    if (shown !== null) {
-      const lines = shown.content.split('\n')
-      const pages = Math.max(1, Math.ceil(shown.totalLines / PAGE_LINES))
-      return (
-        <Box flexDirection="column">
-          <Box justifyContent="space-between">
-            <Text bold>{shown.path}</Text>
-            <Button key="back" onPress={() => void update($, preview, () => null)}>
-              Back
-            </Button>
-          </Box>
-          {shown.isError ? (
-            <Text dimColor>{shown.content}</Text>
-          ) : (
-            lines.slice(0, room).map(line => <Text dimColor>{fit(line)}</Text>)
-          )}
-          {!shown.isError && lines.length > room && (
-            <Text dimColor>... {lines.length - room} more lines</Text>
-          )}
-          {shown.totalLines > PAGE_LINES && (
-            <Box>
-              {shown.page > 1 && (
-                <Button
-                  key="prev"
-                  onPress={() => void openPreview($, shown.path, shown.page - 1)}
-                >
-                  Prev
-                </Button>
-              )}
-              <Text dimColor>
-                {' '}
-                {shown.page}/{pages}{' '}
-              </Text>
-              {shown.page < pages && (
-                <Button
-                  key="next"
-                  onPress={() => void openPreview($, shown.path, shown.page + 1)}
-                >
-                  Next
-                </Button>
-              )}
-            </Box>
-          )}
-        </Box>
-      )
-    }
-
     const treeMap = await read($, tree)
     const open = new Set(await read($, expanded))
     const rows: Row[] = []
@@ -267,6 +220,99 @@ export const register: Register = on => {
       })
     }
     walk(root, [])
+
+    const nodeRow = (r: Row) => (
+      <Button
+        plain
+        key={'node:' + r.path}
+        dimColor={!r.isDir}
+        onPress={() => (r.isDir ? void toggle($, r.path) : void openPreview($, r.path))}
+      >
+        {fit(r.label)}
+      </Button>
+    )
+
+    const backRow = (
+      <Button key="back" onPress={() => void update($, preview, () => null)}>
+        Back
+      </Button>
+    )
+
+    const previewBody = (cap: number) => {
+      if (!shown) return null
+      const lines = shown.content.split('\n')
+      return (
+        <Box flexDirection="column">
+          {shown.isError ? (
+            <Text dimColor>{shown.content}</Text>
+          ) : (
+            lines.slice(0, cap).map(line => <Text dimColor>{fit(line)}</Text>)
+          )}
+          {!shown.isError && lines.length > cap && (
+            <Text dimColor>... {lines.length - cap} more lines</Text>
+          )}
+        </Box>
+      )
+    }
+
+    const pagerRow = () => {
+      if (!shown || shown.totalLines <= PAGE_LINES) return null
+      const pages = Math.max(1, Math.ceil(shown.totalLines / PAGE_LINES))
+      return (
+        <Box>
+          {shown.page > 1 && (
+            <Button key="prev" onPress={() => void openPreview($, shown.path, shown.page - 1)}>
+              Prev
+            </Button>
+          )}
+          <Text dimColor>
+            {' '}
+            {shown.page}/{pages}{' '}
+          </Text>
+          {shown.page < pages && (
+            <Button key="next" onPress={() => void openPreview($, shown.path, shown.page + 1)}>
+              Next
+            </Button>
+          )}
+        </Box>
+      )
+    }
+
+    // fullscreen with a preview: tree on top, preview below
+    if (shown !== null && e.viewport?.isFullscreen === true) {
+      const body = Math.max(12, (e.viewport?.rows ?? 24) - 8)
+      const previewRoom = Math.max(3, Math.floor(body / 2) - 3)
+      const treeRoom = Math.max(3, body - previewRoom - 5)
+      return (
+        <Box flexDirection="column">
+          <Box justifyContent="space-between">
+            <Text bold>Files</Text>
+            {backRow}
+          </Box>
+          <Text dimColor>{root}</Text>
+          {rows.slice(0, treeRoom).map(nodeRow)}
+          {rows.length > treeRoom && <Text dimColor>... {rows.length - treeRoom} more</Text>}
+          <Text dimColor>{'─'.repeat(width)}</Text>
+          <Text bold>{fit(shown.path)}</Text>
+          {previewBody(previewRoom)}
+          {pagerRow()}
+        </Box>
+      )
+    }
+
+    // any size without the room: the preview takes the pane
+    if (shown !== null) {
+      return (
+        <Box flexDirection="column">
+          <Box justifyContent="space-between">
+            <Text bold>{shown.path}</Text>
+            {backRow}
+          </Box>
+          {previewBody(room)}
+          {pagerRow()}
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column">
@@ -294,16 +340,7 @@ export const register: Register = on => {
             )}
           </Box>
           <Text dimColor>{root}</Text>
-          {rows.slice(0, room).map(r => (
-            <Button
-              plain
-              key={'node:' + r.path}
-              dimColor={!r.isDir}
-              onPress={() => (r.isDir ? void toggle($, r.path) : void openPreview($, r.path))}
-            >
-              {fit(r.label)}
-            </Button>
-          ))}
+          {rows.slice(0, room).map(nodeRow)}
           {rows.length > room && <Text dimColor>... {rows.length - room} more</Text>}
         </Box>
       </Box>

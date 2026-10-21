@@ -244,3 +244,50 @@ test('a file over the read cap pages through, more-style', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /^alpha$/ }))?.text).toBe('alpha')
   await ui.unmount()
 })
+
+test('fullscreen keeps the tree above the preview', async ($, on) => {
+  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/plain' }))
+  on('process.run', () => ({
+    value: {
+      exitCode: 128,
+      stdout: '',
+      stderr: 'fatal: not a git repository',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('fs.list', () => ({
+    value: [
+      { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
+    ],
+  }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
+  on('fs.read', () => ({ value: 'hello\nworld' }))
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const FULL = {
+    ...PANE,
+    surface: 'terminal',
+    viewport: { columns: 200, rows: 50, isFullscreen: true },
+  } as const
+  const ui = await $.ui.mount(FULL)
+  await ui.press({ key: 'node:/plain/a.ts' })
+
+  // the tree stays above
+  expect((await ui.find({ key: 'node:/plain/src' }))?.text).toBe('├── src/')
+  // the preview sits below
+  expect((await ui.find({ type: 'Text', text: /^hello$/ }))?.text).toBe('hello')
+  expect((await ui.find({ key: 'back' }))?.text).toBe('Back')
+
+  // Back returns to the tree-only layout
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ key: 'node:/plain/src' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^hello$/ })).toBeUndefined()
+  await ui.unmount()
+})
