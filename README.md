@@ -15,7 +15,9 @@ every two seconds, plus a Refresh button. Binary and empty files are named
 instead of drawn.
 
 A tree taller than the pane scrolls: mouse wheel over the pane, or the arrow
-keys once the pane has focus.
+keys once the pane has focus. With a preview open the halves scroll on their
+own: the wheel over the tree moves the tree, over the preview moves the
+preview, and the headers stay put.
 
 ## Install
 

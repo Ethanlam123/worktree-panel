@@ -15,6 +15,13 @@ const treeRoot = atom({ plugin: 'worktree-panel', key: 'treeRoot' } as const, ''
 const tree = atom({ plugin: 'worktree-panel', key: 'tree' } as const, {} as Record<string, FileEntry[]>)
 const expanded = atom({ plugin: 'worktree-panel', key: 'expanded' } as const, [] as string[])
 const preview = atom({ plugin: 'worktree-panel', key: 'preview' } as const, null as Preview | null)
+// how far each half of the pane is scrolled, when the plugin owns the scrolling
+const treeOffset = atom({ plugin: 'worktree-panel', key: 'treeOffset' } as const, 0)
+const previewOffset = atom({ plugin: 'worktree-panel', key: 'previewOffset' } as const, 0)
+
+// what the scroll handler needs of the last draw: whether the preview has the
+// body to itself, the body row the preview half starts at, and each half's reach
+let scrollShape = { previewIsWhole: false, splitAt: 0, treeMax: 0, previewMax: 0 }
 
 // cwd is the worktree itself, or a folder under it
 const isInside = (cwd: string, path: string): boolean =>
@@ -84,6 +91,7 @@ const reroot = async ($: EngineInterface, path: string) => {
   const cwd = await $.session.cwd()
   await update($, preview, () => null)
   await update($, expanded, () => [])
+  await update($, treeOffset, () => 0)
   await update($, treeRoot, () => (path === cwd ? '' : path))
   await refreshTree($)
 }
@@ -113,8 +121,11 @@ const pageLines = async ($: EngineInterface, path: string, page: number): Promis
   return sed && sed.exitCode === 0 ? sed.stdout : ''
 }
 
-const setPreview = async ($: EngineInterface, value: Preview) =>
-  update($, preview, () => value)
+const setPreview = async ($: EngineInterface, value: Preview) => {
+  await update($, preview, () => value)
+  // every page and every new file starts at its top
+  await update($, previewOffset, () => 0)
+}
 
 // a whole preview taller than this pages in memory: the pane redraws every
 // refresh, and thousands of rows at once would stall it
@@ -258,14 +269,17 @@ export const register: Register = on => {
       </Button>
     )
 
-    const previewBody = () => {
+    const previewBody = (cap: number, off: number) => {
       if (!shown) return null
       return (
         <Box flexDirection="column">
           {shown.isError ? (
             <Text dimColor>{shown.content}</Text>
           ) : (
-            shown.content.split('\n').map(line => <Text dimColor>{fit(line)}</Text>)
+            shown.content
+              .split('\n')
+              .slice(off, off + cap)
+              .map(line => <Text dimColor>{fit(line)}</Text>)
           )}
         </Box>
       )
@@ -299,11 +313,25 @@ export const register: Register = on => {
       )
     }
 
-    // fullscreen with a preview: tree on top, preview below
+    // fullscreen with a preview: tree on top, preview below, each half
+    // scrolling on its own - the wheel picks the half it lands on
     if (shown !== null && e.viewport?.isFullscreen === true) {
-      const body = Math.max(12, (e.viewport?.rows ?? 24) - 8)
+      const body = Math.max(12, e.props.scroll.bodyRows || (e.viewport?.rows ?? 24) - 8)
       const previewRoom = Math.max(3, Math.floor(body / 2) - 3)
       const treeRoom = Math.max(3, body - previewRoom - 5)
+      const treeMax = Math.max(0, rows.length - treeRoom)
+      const tOff = Math.min(await read($, treeOffset), treeMax)
+      const treeSlice = rows.slice(tOff, tOff + treeRoom)
+      const lines = shown.content.split('\n')
+      const previewMax = shown.isError ? 0 : Math.max(0, lines.length - previewRoom)
+      const pOff = Math.min(await read($, previewOffset), previewMax)
+      // the body row the divider sits on: rows above it belong to the tree half
+      scrollShape = {
+        previewIsWhole: false,
+        splitAt: 2 + treeSlice.length + 1,
+        treeMax,
+        previewMax,
+      }
       return (
         <Box flexDirection="column">
           <Box justifyContent="space-between">
@@ -311,25 +339,30 @@ export const register: Register = on => {
             {backRow}
           </Box>
           <Text dimColor>{root}</Text>
-          {rows.slice(0, treeRoom).map(nodeRow)}
-          {rows.length > treeRoom && <Text dimColor>... {rows.length - treeRoom} more</Text>}
+          {treeSlice.map(nodeRow)}
           <Text dimColor>{'─'.repeat(width)}</Text>
           <Text bold>{fit(shown.path)}</Text>
-          {previewBody()}
+          {previewBody(previewRoom, pOff)}
           {pagerRow()}
         </Box>
       )
     }
 
-    // any size without the room: the preview takes the pane
+    // any size without the room: the preview takes the pane, its lines
+    // scrolling under a fixed header
     if (shown !== null) {
+      const cap = Math.max(1, e.props.scroll.bodyRows - 2)
+      const lines = shown.content.split('\n')
+      const previewMax = shown.isError ? 0 : Math.max(0, lines.length - cap)
+      const off = Math.min(await read($, previewOffset), previewMax)
+      scrollShape = { previewIsWhole: true, splitAt: 0, treeMax: 0, previewMax }
       return (
         <Box flexDirection="column">
           <Box justifyContent="space-between">
             <Text bold>{shown.path}</Text>
             {backRow}
           </Box>
-          {previewBody()}
+          {previewBody(cap, off)}
           {pagerRow()}
         </Box>
       )
@@ -365,5 +398,23 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  // with a preview open the plugin owns the scrolling: the half the wheel is
+  // over moves, the other stays put. Without one, the engine scrolls the tree
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if ((await read($, preview)) === null) return next(e)
+    const previewHalf =
+      scrollShape.previewIsWhole ||
+      (e.pointer !== undefined && e.pointer.row >= scrollShape.splitAt)
+    if (previewHalf) {
+      const at = Math.max(0, Math.min((await read($, previewOffset)) + e.by, scrollShape.previewMax))
+      await update($, previewOffset, () => at)
+    } else {
+      const at = Math.max(0, Math.min((await read($, treeOffset)) + e.by, scrollShape.treeMax))
+      await update($, treeOffset, () => at)
+    }
+    // no next: the engine's window stays, the pane redraws on the atom change
+    return {}
   })
 }

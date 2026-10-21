@@ -19,6 +19,8 @@ declare module 'claude-code' {
       tree: Record<string, FileEntry[]>
       expanded: string[]
       preview: Preview | null
+      treeOffset: number
+      previewOffset: number
     }
   }
 }

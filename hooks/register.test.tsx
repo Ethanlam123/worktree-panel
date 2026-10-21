@@ -361,6 +361,102 @@ test('a readable file too tall to draw whole pages in memory', async ($, on) => 
   await ui.unmount()
 })
 
+test('fullscreen halves scroll on their own: the wheel picks by where it lands', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: Array.from({ length: 25 }, (_, i) => ({
+        name: `f${String(i + 1).padStart(2, '0')}.txt`,
+        kind: 'file',
+        size: 1,
+        mtimeMs: 0,
+        isLink: false,
+      })),
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 3000, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({
+      value: Array.from({ length: 30 }, (_, i) => `l${String(i + 1).padStart(2, '0')}`).join('\n'),
+    }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const FULL = {
+    ...PANE,
+    surface: 'terminal',
+    viewport: { columns: 200, rows: 50, isFullscreen: true },
+    props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } },
+  } as const
+  const ui = await $.ui.mount(FULL)
+  await ui.press({ key: 'node:/plain/f01.txt' })
+
+  const wheel = (by: number, row: number) =>
+    $.ui.scroll({
+      component: 'Pane',
+      requestId: 'worktree-panel',
+      offset: 0,
+      by,
+      bodyRows: 40,
+      contentRows: 60,
+      origin: { kind: 'person' },
+      pointer: { column: 5, row },
+    })
+
+  // the tree half: 25 rows in a window of 18
+  expect(await ui.find({ key: 'node:/plain/f25.txt' })).toBeUndefined()
+  await wheel(6, 3)
+  expect((await ui.find({ key: 'node:/plain/f07.txt' }))?.text).toContain('f07.txt')
+  expect(await ui.find({ key: 'node:/plain/f01.txt' })).toBeUndefined()
+  // the preview half has not moved
+  expect((await ui.find({ type: 'Text', text: /^l01$/ }))?.text).toBe('l01')
+
+  // the preview half: 30 lines in a window of 17, past its end it clamps
+  await wheel(4, 30)
+  expect((await ui.find({ type: 'Text', text: /^l05$/ }))?.text).toBe('l05')
+  expect(await ui.find({ type: 'Text', text: /^l01$/ })).toBeUndefined()
+  // the tree half has not moved
+  expect((await ui.find({ key: 'node:/plain/f07.txt' }))?.text).toContain('f07.txt')
+
+  await wheel(999, 30)
+  expect((await ui.find({ type: 'Text', text: /^l14$/ }))?.text).toBe('l14')
+  await ui.unmount()
+})
+
+test('a docked preview scrolls its lines under a fixed header', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: [{ name: 'mid.txt', kind: 'file', size: 4000, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 4000, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({
+      value: Array.from({ length: 40 }, (_, i) => `m${String(i + 1).padStart(2, '0')}`).join('\n'),
+    }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'node:/plain/mid.txt' })
+  // 40 lines in a window of bodyRows 30 less the header and pager
+  expect(await ui.find({ type: 'Text', text: /^m29$/ })).toBeUndefined()
+
+  // scroll keys carry no pointer: the preview is the whole body, so it moves
+  await $.ui.scroll({
+    component: 'Pane',
+    requestId: 'worktree-panel',
+    offset: 0,
+    by: 10,
+    bodyRows: 30,
+    contentRows: 42,
+    origin: { kind: 'person' },
+  })
+  expect((await ui.find({ type: 'Text', text: /^m11$/ }))?.text).toBe('m11')
+  expect(await ui.find({ type: 'Text', text: /^m01$/ })).toBeUndefined()
+  expect(await ui.find({ key: 'back' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('fullscreen keeps the tree above the preview', async ($, on) => {
   baseMocks(on, '/plain', o => {
     o('process.run', GIT_FAIL)
