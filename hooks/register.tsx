@@ -128,35 +128,34 @@ const openPreview = async ($: EngineInterface, path: string, page = 1) => {
   }
   if (stat.size > READ_CAP) {
     // over the read cap: page through the file on the host, more-style
-    const content = await pageLines($, path, page)
+    const totalLines = await countLines($, path)
+    // the file may have shrunk since this page was asked for: stay in range
+    // (only when the count is known; without it every page may be the last)
+    const pages = Math.max(1, Math.ceil(totalLines / PAGE_LINES))
+    const at = totalLines > 0 ? Math.min(page, pages) : page
+    const content = await pageLines($, path, at)
+    // binary bytes render as nothing in the pane: name them instead
     const isBinary = /[\x00-\x08\x0e-\x1f\x7f]/.test(content)
     await setPreview($, {
       path,
       content: isBinary ? '(binary file, nothing to preview)' : content,
       isError: isBinary,
-      page,
-      totalLines: isBinary ? 0 : await countLines($, path),
+      page: at,
+      totalLines: isBinary ? 0 : totalLines,
     })
     return
   }
   const text = await $.fs.read(path).catch(() => undefined)
-  // binary bytes render as nothing in the pane: name them instead
   const isBinary = text !== undefined && /[\x00-\x08\x0e-\x1f\x7f]/.test(text)
-  if (text === undefined) {
-    await setPreview($, {
-      path, content: 'cannot preview (unreadable)', isError: true, page: 1, totalLines: 0,
-    })
-  } else if (isBinary) {
-    await setPreview($, {
-      path, content: '(binary file, nothing to preview)', isError: true, page: 1, totalLines: 0,
-    })
-  } else if (text === '') {
-    await setPreview($, {
-      path, content: '(empty file)', isError: true, page: 1, totalLines: 0,
-    })
-  } else {
-    await setPreview($, { path, content: text, isError: false, page: 1, totalLines: 0 })
-  }
+  const verdict =
+    text === undefined
+      ? { content: 'cannot preview (unreadable)', isError: true }
+      : isBinary
+        ? { content: '(binary file, nothing to preview)', isError: true }
+        : text === ''
+          ? { content: '(empty file)', isError: true }
+          : { content: text, isError: false }
+  await setPreview($, { path, page: 1, totalLines: 0, ...verdict })
 }
 
 // one row of the tree, ready to draw
@@ -256,8 +255,12 @@ export const register: Register = on => {
     }
 
     const pagerRow = () => {
-      if (!shown || shown.totalLines <= PAGE_LINES) return null
+      if (!shown) return null
       const pages = Math.max(1, Math.ceil(shown.totalLines / PAGE_LINES))
+      // a full page means more may follow even when the line count is unknown
+      const isFullPage = shown.content.split('\n').length > PAGE_LINES
+      if (shown.totalLines <= PAGE_LINES && !isFullPage) return null
+      const known = shown.totalLines > PAGE_LINES
       return (
         <Box>
           {shown.page > 1 && (
@@ -267,9 +270,9 @@ export const register: Register = on => {
           )}
           <Text dimColor>
             {' '}
-            {shown.page}/{pages}{' '}
+            {known ? `${shown.page}/${pages}` : `page ${shown.page}`}{' '}
           </Text>
-          {shown.page < pages && (
+          {(shown.page < pages || (!known && isFullPage)) && (
             <Button key="next" onPress={() => void openPreview($, shown.path, shown.page + 1)}>
               Next
             </Button>

@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 const PANE = {
   plugin: 'worktree-panel',
@@ -14,29 +15,48 @@ const PANE = {
   },
 } as const
 
-test('the pane lists worktrees and a file tree, on every surface', async ($, on) => {
+// the engine answers every test shares, plus whatever the test adds on top
+const baseMocks = (on: On, cwd: string, add: (on: On) => void = () => {}) => {
   on('command.register', () => ({ value: { command: 'worktree-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/repo' }))
-  on('process.run', () => ({
-    value: {
-      exitCode: 0,
-      stdout:
-        'worktree /repo\nHEAD 1234567abcdef\nbranch refs/heads/main\n\n' +
-        'worktree /repo-wt\nHEAD fedcba0987654321\nbranch refs/heads/feature\n',
-      stderr: '',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  on('fs.list', () => ({
-    value: [
-      { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
-      { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
-    ],
-  }))
+  on('session.cwd', () => ({ value: cwd }))
+  add(on)
+}
+
+const GIT_OK = () => ({
+  value: {
+    exitCode: 0,
+    stdout:
+      'worktree /repo\nHEAD 1234567abcdef\nbranch refs/heads/main\n\n' +
+      'worktree /repo-wt\nHEAD fedcba0987654321\nbranch refs/heads/feature\n',
+    stderr: '',
+    isStdoutTruncated: false,
+    isStderrTruncated: false,
+  },
+})
+
+const GIT_FAIL = () => ({
+  value: {
+    exitCode: 128,
+    stdout: '',
+    stderr: 'fatal: not a git repository (or any of the parent directories): .git',
+    isStdoutTruncated: false,
+    isStderrTruncated: false,
+  },
+})
+
+test('the pane lists worktrees and a file tree, on every surface', async ($, on) => {
+  baseMocks(on, '/repo', o => {
+    o('process.run', GIT_OK)
+    o('fs.list', () => ({
+      value: [
+        { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
+        { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      ],
+    }))
+  })
 
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
 
@@ -55,23 +75,12 @@ test('the pane lists worktrees and a file tree, on every surface', async ($, on)
 })
 
 test('outside a git repository the pane says so and still lists files', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/plain' }))
-  on('process.run', () => ({
-    value: {
-      exitCode: 128,
-      stdout: '',
-      stderr: 'fatal: not a git repository (or any of the parent directories): .git',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  on('fs.list', () => ({
-    value: [{ name: 'notes.md', kind: 'file', size: 3, mtimeMs: 0, isLink: false }],
-  }))
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: [{ name: 'notes.md', kind: 'file', size: 3, mtimeMs: 0, isLink: false }],
+    }))
+  })
 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
@@ -84,29 +93,18 @@ test('outside a git repository the pane says so and still lists files', async ($
 })
 
 test('clicking a folder expands it as a tree; clicking again collapses', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/repo' }))
-  on('process.run', () => ({
-    value: {
-      exitCode: 128,
-      stdout: '',
-      stderr: 'fatal: not a git repository',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  on('fs.list', (_, e) => ({
-    value:
-      e.path === '/repo/src'
-        ? [{ name: 'inner.ts', kind: 'file', size: 1, mtimeMs: 0, isLink: false }]
-        : [
-            { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
-            { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
-          ],
-  }))
+  baseMocks(on, '/repo', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', (_, e) => ({
+      value:
+        e.path === '/repo/src'
+          ? [{ name: 'inner.ts', kind: 'file', size: 1, mtimeMs: 0, isLink: false }]
+          : [
+              { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
+              { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+            ],
+    }))
+  })
 
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
 
@@ -122,35 +120,17 @@ test('clicking a folder expands it as a tree; clicking again collapses', async (
 })
 
 test('clicking a file previews it; clicking a worktree re-roots the tree', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/repo' }))
-  on('process.run', (_, e) => {
-    if (e.argv[0] === 'git') {
-      return {
-        value: {
-          exitCode: 0,
-          stdout:
-            'worktree /repo\nHEAD 1234567abcdef\nbranch refs/heads/main\n\n' +
-            'worktree /repo-wt\nHEAD fedcba0987654321\nbranch refs/heads/feature\n',
-          stderr: '',
-          isStdoutTruncated: false,
-          isStderrTruncated: false,
-        },
-      }
-    }
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  baseMocks(on, '/repo', o => {
+    o('process.run', GIT_OK)
+    o('fs.list', (_, e) => ({
+      value:
+        e.path === '/repo-wt'
+          ? [{ name: 'wt.txt', kind: 'file', size: 2, mtimeMs: 0, isLink: false }]
+          : [{ name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({ value: 'hello\nworld' }))
   })
-  on('fs.list', (_, e) => ({
-    value:
-      e.path === '/repo-wt'
-        ? [{ name: 'wt.txt', kind: 'file', size: 2, mtimeMs: 0, isLink: false }]
-        : [{ name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false }],
-  }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
-  on('fs.read', () => ({ value: 'hello\nworld' }))
 
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
 
@@ -171,25 +151,14 @@ test('clicking a file previews it; clicking a worktree re-roots the tree', async
 })
 
 test('clicking a binary file says so instead of drawing nothing', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/plain' }))
-  on('process.run', () => ({
-    value: {
-      exitCode: 128,
-      stdout: '',
-      stderr: 'fatal: not a git repository',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  on('fs.list', () => ({
-    value: [{ name: '.DS_Store', kind: 'file', size: 6148, mtimeMs: 0, isLink: false }],
-  }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 6148, mtimeMs: 0, isLink: false } }))
-  on('fs.read', () => ({ value: '\x00\x00\x00\x01Bud1\x00' }))
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: [{ name: '.DS_Store', kind: 'file', size: 6148, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 6148, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({ value: '\x00\x00\x00\x01Bud1\x00' }))
+  })
 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
@@ -203,29 +172,34 @@ test('clicking a binary file says so instead of drawing nothing', async ($, on) 
 })
 
 test('a file over the read cap pages through, more-style', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/plain' }))
-  on('process.run', (_, e) => {
-    if (e.argv[0] === 'wc') {
-      return { value: { exitCode: 0, stdout: '     120 /plain/big.log', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
-    return {
-      value: {
-        exitCode: 0,
-        stdout: e.argv[2] === '1,20p' ? 'alpha\nbeta' : 'gamma\ndelta',
-        stderr: '',
-        isStdoutTruncated: false,
-        isStderrTruncated: false,
-      },
-    }
+  baseMocks(on, '/plain', o => {
+    o('process.run', (_, e) => {
+      if (e.argv[0] === 'wc') {
+        return {
+          value: {
+            exitCode: 0,
+            stdout: '     120 /plain/big.log',
+            stderr: '',
+            isStdoutTruncated: false,
+            isStderrTruncated: false,
+          },
+        }
+      }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv[2] === '1,20p' ? 'alpha\nbeta' : 'gamma\ndelta',
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    })
+    o('fs.list', () => ({
+      value: [{ name: 'big.log', kind: 'file', size: 5000000, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 5000000, mtimeMs: 0, isLink: false } }))
   })
-  on('fs.list', () => ({
-    value: [{ name: 'big.log', kind: 'file', size: 5000000, mtimeMs: 0, isLink: false }],
-  }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 5000000, mtimeMs: 0, isLink: false } }))
 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
@@ -245,29 +219,109 @@ test('a file over the read cap pages through, more-style', async ($, on) => {
   await ui.unmount()
 })
 
+test('a page beyond a shrunk file is clamped to the last real page', async ($, on) => {
+  let wcCalls = 0
+  baseMocks(on, '/plain', o => {
+    o('process.run', (_, e) => {
+      if (e.argv[0] === 'wc') {
+        wcCalls += 1
+        // the file shrinks after the fourth look: 120 lines down to 40
+        return {
+          value: {
+            exitCode: 0,
+            stdout: wcCalls <= 4 ? '     120 /plain/big.log' : '      40 /plain/big.log',
+            stderr: '',
+            isStdoutTruncated: false,
+            isStderrTruncated: false,
+          },
+        }
+      }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv[2] === '1,20p' ? 'alpha\nbeta' : 'gamma\ndelta',
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    })
+    o('fs.list', () => ({
+      value: [{ name: 'big.log', kind: 'file', size: 5000000, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 5000000, mtimeMs: 0, isLink: false } }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'node:/plain/big.log' })
+  await ui.press({ key: 'next' })
+  await ui.press({ key: 'next' })
+  await ui.press({ key: 'next' })
+  await ui.press({ key: 'next' })
+
+  // asking for page 5 of a now-2-page file lands on page 2, not an empty page
+  expect((await ui.find({ type: 'Text', text: /2\/2/ }))?.text).toContain('2/2')
+  expect((await ui.find({ type: 'Text', text: /^gamma$/ }))?.text).toBe('gamma')
+  expect(await ui.find({ key: 'next' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('without a line count, a full page still offers Next', async ($, on) => {
+  const fullPage = 'l01\nl02\nl03\nl04\nl05\nl06\nl07\nl08\nl09\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n'
+  baseMocks(on, '/plain', o => {
+    o('process.run', (_, e) =>
+      e.argv[0] === 'wc'
+        ? {
+            value: {
+              exitCode: 1,
+              stdout: '',
+              stderr: 'wc: not found',
+              isStdoutTruncated: false,
+              isStderrTruncated: false,
+            },
+          }
+        : {
+            value: {
+              exitCode: 0,
+              stdout: fullPage,
+              stderr: '',
+              isStdoutTruncated: false,
+              isStderrTruncated: false,
+            },
+          },
+    )
+    o('fs.list', () => ({
+      value: [{ name: 'big.log', kind: 'file', size: 5000000, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 5000000, mtimeMs: 0, isLink: false } }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'node:/plain/big.log' })
+  expect((await ui.find({ type: 'Text', text: /page 1/ }))?.text).toContain('page 1')
+  expect(await ui.find({ key: 'next' })).toBeDefined()
+
+  await ui.press({ key: 'next' })
+  expect((await ui.find({ type: 'Text', text: /page 2/ }))?.text).toContain('page 2')
+  await ui.unmount()
+})
+
 test('fullscreen keeps the tree above the preview', async ($, on) => {
-  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: undefined }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/plain' }))
-  on('process.run', () => ({
-    value: {
-      exitCode: 128,
-      stdout: '',
-      stderr: 'fatal: not a git repository',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
-  on('fs.list', () => ({
-    value: [
-      { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
-      { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
-    ],
-  }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
-  on('fs.read', () => ({ value: 'hello\nworld' }))
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: [
+        { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+        { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
+      ],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({ value: 'hello\nworld' }))
+  })
 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
