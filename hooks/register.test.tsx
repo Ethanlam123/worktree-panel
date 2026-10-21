@@ -47,6 +47,24 @@ const GIT_FAIL = () => ({
   },
 })
 
+// a 25-file tree and a 30-line readable file: both halves taller than their windows
+const SPLIT_FIXTURE = (on: On) => {
+  on('process.run', GIT_FAIL)
+  on('fs.list', () => ({
+    value: Array.from({ length: 25 }, (_, i) => ({
+      name: `f${String(i + 1).padStart(2, '0')}.txt`,
+      kind: 'file',
+      size: 1,
+      mtimeMs: 0,
+      isLink: false,
+    })),
+  }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 3000, mtimeMs: 0, isLink: false } }))
+  on('fs.read', () => ({
+    value: Array.from({ length: 30 }, (_, i) => `l${String(i + 1).padStart(2, '0')}`).join('\n'),
+  }))
+}
+
 test('the pane lists worktrees and a file tree, on every surface', async ($, on) => {
   baseMocks(on, '/repo', o => {
     o('process.run', GIT_OK)
@@ -362,22 +380,7 @@ test('a readable file too tall to draw whole pages in memory', async ($, on) => 
 })
 
 test('fullscreen halves scroll on their own: the wheel picks by where it lands', async ($, on) => {
-  baseMocks(on, '/plain', o => {
-    o('process.run', GIT_FAIL)
-    o('fs.list', () => ({
-      value: Array.from({ length: 25 }, (_, i) => ({
-        name: `f${String(i + 1).padStart(2, '0')}.txt`,
-        kind: 'file',
-        size: 1,
-        mtimeMs: 0,
-        isLink: false,
-      })),
-    }))
-    o('fs.stat', () => ({ value: { kind: 'file', size: 3000, mtimeMs: 0, isLink: false } }))
-    o('fs.read', () => ({
-      value: Array.from({ length: 30 }, (_, i) => `l${String(i + 1).padStart(2, '0')}`).join('\n'),
-    }))
-  })
+  baseMocks(on, '/plain', SPLIT_FIXTURE)
 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
@@ -419,6 +422,61 @@ test('fullscreen halves scroll on their own: the wheel picks by where it lands',
 
   await wheel(999, 30)
   expect((await ui.find({ type: 'Text', text: /^l14$/ }))?.text).toBe('l14')
+  await ui.unmount()
+})
+
+test('key scrolls follow the wheel, then the half that holds focus', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    SPLIT_FIXTURE(o)
+    o('ui.focus', () => ({}))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const FULL = {
+    ...PANE,
+    surface: 'terminal',
+    viewport: { columns: 200, rows: 50, isFullscreen: true },
+    props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } },
+  } as const
+  const ui = await $.ui.mount(FULL)
+  await ui.press({ key: 'node:/plain/f01.txt' })
+
+  const scroll = (by: number, row?: number) =>
+    $.ui.scroll({
+      component: 'Pane',
+      requestId: 'worktree-panel',
+      offset: 0,
+      by,
+      bodyRows: 40,
+      contentRows: 60,
+      origin: { kind: 'person' },
+      ...(row !== undefined ? { pointer: { column: 5, row } } : {}),
+    })
+
+  // keys start on the tree, no pointer and no wheel yet
+  await scroll(3)
+  expect((await ui.find({ key: 'node:/plain/f04.txt' }))?.text).toContain('f04.txt')
+  expect(await ui.find({ key: 'node:/plain/f01.txt' })).toBeUndefined()
+
+  // the wheel over the preview puts the keys on the preview
+  await scroll(4, 30)
+  await scroll(2)
+  expect((await ui.find({ type: 'Text', text: /^l07$/ }))?.text).toBe('l07')
+  expect(await ui.find({ type: 'Text', text: /^l01$/ })).toBeUndefined()
+  expect((await ui.find({ key: 'node:/plain/f04.txt' }))?.text).toContain('f04.txt')
+
+  // focus on a tree element puts the keys back on the tree
+  await $.ui.focus({
+    component: 'Pane',
+    requestId: 'worktree-panel',
+    element: 'back',
+    origin: { kind: 'person' },
+  })
+  await scroll(2)
+  expect((await ui.find({ key: 'node:/plain/f06.txt' }))?.text).toContain('f06.txt')
+  expect(await ui.find({ key: 'node:/plain/f04.txt' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^l07$/ }))?.text).toBe('l07')
   await ui.unmount()
 })
 

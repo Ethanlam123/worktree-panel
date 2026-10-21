@@ -22,6 +22,9 @@ const previewOffset = atom({ plugin: 'worktree-panel', key: 'previewOffset' } as
 // what the scroll handler needs of the last draw: whether the preview has the
 // body to itself, the body row the preview half starts at, and each half's reach
 let scrollShape = { previewIsWhole: false, splitAt: 0, treeMax: 0, previewMax: 0 }
+// the half key scrolls pick up when no pointer names one: the last the wheel
+// touched, moved by what holds focus
+let keyHalfIsPreview = false
 
 // cwd is the worktree itself, or a folder under it
 const isInside = (cwd: string, path: string): boolean =>
@@ -123,8 +126,9 @@ const pageLines = async ($: EngineInterface, path: string, page: number): Promis
 
 const setPreview = async ($: EngineInterface, value: Preview) => {
   await update($, preview, () => value)
-  // every page and every new file starts at its top
+  // every page and every new file starts at its top, keys back on the tree
   await update($, previewOffset, () => 0)
+  keyHalfIsPreview = false
 }
 
 // a whole preview taller than this pages in memory: the pane redraws every
@@ -212,7 +216,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'worktree-panel' }, async $ => {
     await refresh($)
-    await $.ui.open({ id: PANE, title: TITLE })
+    // asked for by hand: the pane asks for the keyboard too, so keys scroll it
+    await $.ui.open({ id: PANE, title: TITLE, focus: true })
 
     return { text: 'Worktree panel opened.' }
   })
@@ -268,6 +273,11 @@ export const register: Register = on => {
         Back
       </Button>
     )
+
+    // one row past the fold: the engine raises arrow scrolls only when the
+    // drawn body overflows it, so this row keeps the keys coming while it
+    // stays hidden below the engine's window
+    const phantomRow = () => <Text dimColor> </Text>
 
     const previewBody = (cap: number, off: number) => {
       if (!shown) return null
@@ -344,6 +354,7 @@ export const register: Register = on => {
           <Text bold>{fit(shown.path)}</Text>
           {previewBody(previewRoom, pOff)}
           {pagerRow()}
+          {phantomRow()}
         </Box>
       )
     }
@@ -364,6 +375,7 @@ export const register: Register = on => {
           </Box>
           {previewBody(cap, off)}
           {pagerRow()}
+          {phantomRow()}
         </Box>
       )
     }
@@ -404,10 +416,18 @@ export const register: Register = on => {
   // over moves, the other stays put. Without one, the engine scrolls the tree
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if ((await read($, preview)) === null) return next(e)
-    const previewHalf =
-      scrollShape.previewIsWhole ||
-      (e.pointer !== undefined && e.pointer.row >= scrollShape.splitAt)
-    if (previewHalf) {
+    // a pointer names its half; keys take the half that holds focus, or the
+    // last one the wheel touched
+    let halfIsPreview: boolean
+    if (scrollShape.previewIsWhole) {
+      halfIsPreview = true
+    } else if (e.pointer !== undefined) {
+      halfIsPreview = e.pointer.row >= scrollShape.splitAt
+      keyHalfIsPreview = halfIsPreview
+    } else {
+      halfIsPreview = keyHalfIsPreview
+    }
+    if (halfIsPreview) {
       const at = Math.max(0, Math.min((await read($, previewOffset)) + e.by, scrollShape.previewMax))
       await update($, previewOffset, () => at)
     } else {
@@ -416,5 +436,14 @@ export const register: Register = on => {
     }
     // no next: the engine's window stays, the pane redraws on the atom change
     return {}
+  })
+
+  // the pager buttons are the preview half's focusable elements: keys scroll
+  // the half that holds the ring
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.element !== undefined) {
+      keyHalfIsPreview = e.element === 'prev' || e.element === 'next'
+    }
+    return next(e)
   })
 }
