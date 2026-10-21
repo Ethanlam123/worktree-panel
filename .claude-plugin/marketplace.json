@@ -1,0 +1,5 @@
+{
+  "name": "worktree-panel",
+  "owner": { "name": "Ethanlam123" },
+  "plugins": [{ "name": "worktree-panel", "source": "./" }]
+}
