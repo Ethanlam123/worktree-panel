@@ -6,6 +6,8 @@ export type Preview = {
   isError: boolean
   page: number
   totalLines: number
+  // true when content is one page of a longer file, so the pager row applies
+  paged: boolean
 }
 
 declare module 'claude-code' {

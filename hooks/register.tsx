@@ -113,16 +113,18 @@ const pageLines = async ($: EngineInterface, path: string, page: number): Promis
   return sed && sed.exitCode === 0 ? sed.stdout : ''
 }
 
-const setPreview = async (
-  $: EngineInterface,
-  value: { path: string; content: string; isError: boolean; page: number; totalLines: number },
-) => update($, preview, () => value)
+const setPreview = async ($: EngineInterface, value: Preview) =>
+  update($, preview, () => value)
+
+// a whole preview taller than this pages in memory: the pane redraws every
+// refresh, and thousands of rows at once would stall it
+const PREVIEW_LINES_CAP = 500
 
 const openPreview = async ($: EngineInterface, path: string, page = 1) => {
   const stat = await $.fs.stat(path).catch(() => undefined)
   if (!stat || stat.kind !== 'file') {
     await setPreview($, {
-      path, content: 'cannot preview (missing, or a directory)', isError: true, page: 1, totalLines: 0,
+      path, content: 'cannot preview (missing, or a directory)', isError: true, page: 1, totalLines: 0, paged: false,
     })
     return
   }
@@ -142,20 +144,39 @@ const openPreview = async ($: EngineInterface, path: string, page = 1) => {
       isError: isBinary,
       page: at,
       totalLines: isBinary ? 0 : totalLines,
+      paged: !isBinary,
     })
     return
   }
   const text = await $.fs.read(path).catch(() => undefined)
   const isBinary = text !== undefined && /[\x00-\x08\x0e-\x1f\x7f]/.test(text)
-  const verdict =
-    text === undefined
-      ? { content: 'cannot preview (unreadable)', isError: true }
-      : isBinary
-        ? { content: '(binary file, nothing to preview)', isError: true }
-        : text === ''
-          ? { content: '(empty file)', isError: true }
-          : { content: text, isError: false }
-  await setPreview($, { path, page: 1, totalLines: 0, ...verdict })
+  if (text === undefined || isBinary || text === '') {
+    const content =
+      text === undefined
+        ? 'cannot preview (unreadable)'
+        : isBinary
+          ? '(binary file, nothing to preview)'
+          : '(empty file)'
+    await setPreview($, { path, content, isError: true, page: 1, totalLines: 0, paged: false })
+    return
+  }
+  // whole file in hand: page in memory when too tall, else draw it all and
+  // let the pane's scroller show the rest
+  const lines = text.split('\n')
+  if (lines.length > PREVIEW_LINES_CAP) {
+    const totalLines = lines.length
+    const at = Math.min(page, Math.max(1, Math.ceil(totalLines / PAGE_LINES)))
+    await setPreview($, {
+      path,
+      content: lines.slice((at - 1) * PAGE_LINES, at * PAGE_LINES).join('\n'),
+      isError: false,
+      page: at,
+      totalLines,
+      paged: true,
+    })
+    return
+  }
+  await setPreview($, { path, content: text, isError: false, page: 1, totalLines: 0, paged: false })
 }
 
 // one row of the tree, ready to draw
@@ -193,7 +214,7 @@ export const register: Register = on => {
     const chosen = await read($, treeRoot)
     const cwd = await $.session.cwd()
     const root = chosen === '' ? cwd : chosen
-    const room = Math.max(1, (e.viewport?.rows ?? 24) - 8)
+    // the pane's scroll window shows what fits: draw every row, the engine scrolls
     // a wrapped line is two rows: cut to the pane's width so a page keeps its height
     const width = Math.max(10, (e.props.bodyColumns ?? e.viewport?.columns ?? 80) - 2)
     const fit = (line: string): string =>
@@ -237,25 +258,22 @@ export const register: Register = on => {
       </Button>
     )
 
-    const previewBody = (cap: number) => {
+    const previewBody = () => {
       if (!shown) return null
-      const lines = shown.content.split('\n')
       return (
         <Box flexDirection="column">
           {shown.isError ? (
             <Text dimColor>{shown.content}</Text>
           ) : (
-            lines.slice(0, cap).map(line => <Text dimColor>{fit(line)}</Text>)
-          )}
-          {!shown.isError && lines.length > cap && (
-            <Text dimColor>... {lines.length - cap} more lines</Text>
+            shown.content.split('\n').map(line => <Text dimColor>{fit(line)}</Text>)
           )}
         </Box>
       )
     }
 
     const pagerRow = () => {
-      if (!shown) return null
+      // only a paged preview (one window of a longer file) has pages to turn
+      if (!shown || !shown.paged) return null
       const pages = Math.max(1, Math.ceil(shown.totalLines / PAGE_LINES))
       // a full page means more may follow even when the line count is unknown
       const isFullPage = shown.content.split('\n').length > PAGE_LINES
@@ -297,7 +315,7 @@ export const register: Register = on => {
           {rows.length > treeRoom && <Text dimColor>... {rows.length - treeRoom} more</Text>}
           <Text dimColor>{'─'.repeat(width)}</Text>
           <Text bold>{fit(shown.path)}</Text>
-          {previewBody(previewRoom)}
+          {previewBody()}
           {pagerRow()}
         </Box>
       )
@@ -311,7 +329,7 @@ export const register: Register = on => {
             <Text bold>{shown.path}</Text>
             {backRow}
           </Box>
-          {previewBody(room)}
+          {previewBody()}
           {pagerRow()}
         </Box>
       )
@@ -343,8 +361,7 @@ export const register: Register = on => {
             )}
           </Box>
           <Text dimColor>{root}</Text>
-          {rows.slice(0, room).map(nodeRow)}
-          {rows.length > room && <Text dimColor>... {rows.length - room} more</Text>}
+          {rows.map(nodeRow)}
         </Box>
       </Box>
     )

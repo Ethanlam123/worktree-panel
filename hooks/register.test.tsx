@@ -140,6 +140,8 @@ test('clicking a file previews it; clicking a worktree re-roots the tree', async
     await ui.press({ key: 'node:/repo/a.ts' })
     expect((await ui.find({ type: 'Text', text: /^\/repo\/a\.ts$/ }))?.text).toBe('/repo/a.ts')
     expect((await ui.find({ type: 'Text', text: /^hello$/ }))?.text).toBe('hello')
+    // a short file draws whole: no pager row
+    expect(await ui.find({ key: 'next' })).toBeUndefined()
     await ui.press({ key: 'back' })
     expect(await ui.find({ key: 'node:/repo/a.ts' })).toBeDefined()
 
@@ -307,6 +309,55 @@ test('without a line count, a full page still offers Next', async ($, on) => {
 
   await ui.press({ key: 'next' })
   expect((await ui.find({ type: 'Text', text: /page 2/ }))?.text).toContain('page 2')
+  await ui.unmount()
+})
+
+test('every tree row is drawn; the pane scrolls instead of truncating', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: Array.from({ length: 12 }, (_, i) => ({
+        name: `f${String(i + 1).padStart(2, '0')}.txt`,
+        kind: 'file',
+        size: 1,
+        mtimeMs: 0,
+        isLink: false,
+      })),
+    }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // taller than the room the pane had: the last row still draws, no "more" note
+  expect((await ui.find({ key: 'node:/plain/f12.txt' }))?.text).toBe('└── f12.txt')
+  expect(await ui.find({ type: 'Text', text: /more/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a readable file too tall to draw whole pages in memory', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    // no wc or sed: any paging must come from the text already read
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: [{ name: 'tall.txt', kind: 'file', size: 6000, mtimeMs: 0, isLink: false }],
+    }))
+    o('fs.stat', () => ({ value: { kind: 'file', size: 6000, mtimeMs: 0, isLink: false } }))
+    o('fs.read', () => ({
+      value: Array.from({ length: 600 }, (_, i) => `l${String(i + 1).padStart(3, '0')}`).join('\n'),
+    }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'node:/plain/tall.txt' })
+  expect((await ui.find({ type: 'Text', text: /^l001$/ }))?.text).toBe('l001')
+  expect((await ui.find({ type: 'Text', text: /1\/30/ }))?.text).toContain('1/30')
+
+  await ui.press({ key: 'next' })
+  expect((await ui.find({ type: 'Text', text: /^l021$/ }))?.text).toBe('l021')
+  expect((await ui.find({ type: 'Text', text: /2\/30/ }))?.text).toContain('2/30')
   await ui.unmount()
 })
 

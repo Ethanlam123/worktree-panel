@@ -14,6 +14,9 @@ worktree points the Files section at that worktree's root. The panel refreshes
 every two seconds, plus a Refresh button. Binary and empty files are named
 instead of drawn.
 
+A tree taller than the pane scrolls: mouse wheel over the pane, or the arrow
+keys once the pane has focus.
+
 ## Install
 
 At the prompt of a terminal session:

@@ -2,7 +2,5 @@
   "name": "worktree-panel",
   "version": "0.1.0",
   "description": "A pane listing git worktrees and the working directory's files",
-  "author": { "name": "Ethanlam123" },
-  "license": "MIT",
   "types": "./types/index.d.ts"
 }
