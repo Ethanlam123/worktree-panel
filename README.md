@@ -14,11 +14,11 @@ worktree points the Files section at that worktree's root. The panel refreshes
 every two seconds, plus a Refresh button. Binary and empty files are named
 instead of drawn.
 
-A tree taller than the pane scrolls: mouse wheel over the pane, or the page
-keys once the pane has focus (`/worktree-panel` asks for it). With a preview
-open the halves scroll on their own: the wheel over the tree moves the tree,
-over the preview moves the preview, and the headers stay put. Page keys follow
-the half that holds focus, or the last one the wheel touched.
+Anything taller than the pane scrolls: mouse wheel over the pane, or the page
+keys once the pane has focus (`/worktree-panel` asks for it). Headers stay
+pinned. With a preview open the halves scroll on their own: the wheel over the
+tree moves the tree, over the preview moves the preview. Page keys follow the
+half that holds focus, or the last one the wheel touched.
 
 ## Install
 

@@ -380,6 +380,36 @@ export const register: Register = on => {
       )
     }
 
+    // tree only: the pane's header stays pinned, one scroller holds the
+    // worktrees and the files together
+    const room = Math.max(1, e.props.scroll.bodyRows - 2)
+    // every row exactly one display row, so the offset counts stay true
+    const wtRows = trees.map(w => (
+      <Button key={'wt:' + w.path} onPress={() => void reroot($, w.path)}>
+        {fit(`${w.isCurrent ? '* ' : '  '}${w.branch || w.head} ${w.path}`)}
+      </Button>
+    ))
+    const scrollable = [
+      ...wtRows,
+      <Text dimColor key="gap">
+        {' '}
+      </Text>,
+      <Box justifyContent="space-between" key="files-head">
+        <Text bold>Files</Text>
+        {chosen !== '' && (
+          <Button key="cwd" onPress={() => void reroot($, cwd)}>
+            Session dir
+          </Button>
+        )}
+      </Box>,
+      <Text dimColor key="root">
+        {fit(root)}
+      </Text>,
+      ...rows.map(nodeRow),
+    ]
+    const treeMax = Math.max(0, scrollable.length - room)
+    const tOff = Math.min(await read($, treeOffset), treeMax)
+    scrollShape = { previewIsWhole: false, splitAt: 0, treeMax, previewMax: 0 }
     return (
       <Box flexDirection="column">
         <Box justifyContent="space-between">
@@ -388,38 +418,24 @@ export const register: Register = on => {
             Refresh
           </Button>
         </Box>
-        {error !== '' && <Text dimColor>{error}</Text>}
-        {error === '' &&
-          trees.map(w => (
-            <Button key={'wt:' + w.path} onPress={() => void reroot($, w.path)}>
-              {w.isCurrent ? '* ' : '  '}
-              {w.branch || w.head} <Text dimColor>{w.path}</Text>
-            </Button>
-          ))}
-        <Box flexDirection="column" marginTop={1}>
-          <Box justifyContent="space-between">
-            <Text bold>Files</Text>
-            {chosen !== '' && (
-              <Button key="cwd" onPress={() => void reroot($, cwd)}>
-                Session dir
-              </Button>
-            )}
-          </Box>
-          <Text dimColor>{root}</Text>
-          {rows.map(nodeRow)}
-        </Box>
+        {error !== '' && <Text dimColor>{fit(error)}</Text>}
+        {scrollable.slice(tOff, tOff + room)}
+        {phantomRow()}
       </Box>
     )
   })
 
-  // with a preview open the plugin owns the scrolling: the half the wheel is
-  // over moves, the other stays put. Without one, the engine scrolls the tree
-  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    if ((await read($, preview)) === null) return next(e)
+  // the plugin owns the pane's scrolling: with a preview open the half the
+  // wheel is over moves and the other stays put; without one the one scroller
+  // is the tree
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const hasPreview = (await read($, preview)) !== null
     // a pointer names its half; keys take the half that holds focus, or the
     // last one the wheel touched
     let halfIsPreview: boolean
-    if (scrollShape.previewIsWhole) {
+    if (!hasPreview) {
+      halfIsPreview = false
+    } else if (scrollShape.previewIsWhole) {
       halfIsPreview = true
     } else if (e.pointer !== undefined) {
       halfIsPreview = e.pointer.row >= scrollShape.splitAt

@@ -480,6 +480,45 @@ test('key scrolls follow the wheel, then the half that holds focus', async ($, o
   await ui.unmount()
 })
 
+test('the tree-only pane pins its header and scrolls worktrees and files together', async ($, on) => {
+  baseMocks(on, '/plain', o => {
+    o('process.run', GIT_FAIL)
+    o('fs.list', () => ({
+      value: Array.from({ length: 35 }, (_, i) => ({
+        name: `f${String(i + 1).padStart(2, '0')}.txt`,
+        kind: 'file',
+        size: 1,
+        mtimeMs: 0,
+        isLink: false,
+      })),
+    }))
+  })
+
+  await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // 35 files under the Files head: taller than the 28 rows left under the pin
+  expect((await ui.find({ key: 'node:/plain/f01.txt' }))?.text).toContain('f01.txt')
+
+  await $.ui.scroll({
+    component: 'Pane',
+    requestId: 'worktree-panel',
+    offset: 0,
+    by: 4,
+    bodyRows: 30,
+    contentRows: 40,
+    origin: { kind: 'person' },
+    pointer: { column: 5, row: 6 },
+  })
+  // the section head scrolled away with the list, the pane's header stayed
+  expect((await ui.find({ key: 'node:/plain/f02.txt' }))?.text).toContain('f02.txt')
+  expect(await ui.find({ key: 'node:/plain/f01.txt' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Files' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: 'Worktrees' }))?.text).toBe('Worktrees')
+  expect(await ui.find({ type: 'Text', text: /not a git repository/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a docked preview scrolls its lines under a fixed header', async ($, on) => {
   baseMocks(on, '/plain', o => {
     o('process.run', GIT_FAIL)
