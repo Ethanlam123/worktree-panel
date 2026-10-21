@@ -14,7 +14,7 @@ const PANE = {
   },
 } as const
 
-test('the pane lists worktrees and files, on every surface', async ($, on) => {
+test('the pane lists worktrees and a file tree, on every surface', async ($, on) => {
   on('command.register', () => ({ value: { command: 'worktree-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
@@ -48,8 +48,8 @@ test('the pane lists worktrees and files, on every surface', async ($, on) => {
     expect(current?.text).toContain('/repo')
     const other = await ui.find({ key: 'wt:/repo-wt' })
     expect(other?.text).toContain('feature')
-    expect((await ui.find({ key: 'dir:src' }))?.text).toBe('src/')
-    expect((await ui.find({ key: 'file:a.ts' }))?.text).toBe('a.ts')
+    expect((await ui.find({ key: 'node:/repo/src' }))?.text).toBe('├── src/')
+    expect((await ui.find({ key: 'node:/repo/a.ts' }))?.text).toBe('└── a.ts')
     await ui.unmount()
   }
 })
@@ -79,11 +79,11 @@ test('outside a git repository the pane says so and still lists files', async ($
   expect((await ui.find({ type: 'Text', text: /not a git repository/ }))?.text).toContain(
     'not a git repository',
   )
-  expect((await ui.find({ key: 'file:notes.md' }))?.text).toBe('notes.md')
+  expect((await ui.find({ key: 'node:/plain/notes.md' }))?.text).toBe('└── notes.md')
   await ui.unmount()
 })
 
-test('clicking a file previews it; clicking a worktree browses it', async ($, on) => {
+test('clicking a folder expands it as a tree; clicking again collapses', async ($, on) => {
   on('command.register', () => ({ value: { command: 'worktree-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
@@ -91,17 +91,63 @@ test('clicking a file previews it; clicking a worktree browses it', async ($, on
   on('session.cwd', () => ({ value: '/repo' }))
   on('process.run', () => ({
     value: {
-      exitCode: 0,
-      stdout:
-        'worktree /repo\nHEAD 1234567abcdef\nbranch refs/heads/main\n\n' +
-        'worktree /repo-wt\nHEAD fedcba0987654321\nbranch refs/heads/feature\n',
-      stderr: '',
+      exitCode: 128,
+      stdout: '',
+      stderr: 'fatal: not a git repository',
       isStdoutTruncated: false,
       isStderrTruncated: false,
     },
   }))
-  on('fs.list', () => ({
-    value: [{ name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false }],
+  on('fs.list', (_, e) => ({
+    value:
+      e.path === '/repo/src'
+        ? [{ name: 'inner.ts', kind: 'file', size: 1, mtimeMs: 0, isLink: false }]
+        : [
+            { name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false },
+            { name: 'src', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+          ],
+  }))
+
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'node:/repo/src/inner.ts' })).toBeUndefined()
+
+  await ui.press({ key: 'node:/repo/src' })
+  expect((await ui.find({ key: 'node:/repo/src/inner.ts' }))?.text).toBe('│   └── inner.ts')
+
+  await ui.press({ key: 'node:/repo/src' })
+  expect(await ui.find({ key: 'node:/repo/src/inner.ts' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('clicking a file previews it; clicking a worktree re-roots the tree', async ($, on) => {
+  on('command.register', () => ({ value: { command: 'worktree-panel' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'git') {
+      return {
+        value: {
+          exitCode: 0,
+          stdout:
+            'worktree /repo\nHEAD 1234567abcdef\nbranch refs/heads/main\n\n' +
+            'worktree /repo-wt\nHEAD fedcba0987654321\nbranch refs/heads/feature\n',
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.list', (_, e) => ({
+    value:
+      e.path === '/repo-wt'
+        ? [{ name: 'wt.txt', kind: 'file', size: 2, mtimeMs: 0, isLink: false }]
+        : [{ name: 'a.ts', kind: 'file', size: 10, mtimeMs: 0, isLink: false }],
   }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
   on('fs.read', () => ({ value: 'hello\nworld' }))
@@ -111,14 +157,14 @@ test('clicking a file previews it; clicking a worktree browses it', async ($, on
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
-    await ui.press({ key: 'file:a.ts' })
+    await ui.press({ key: 'node:/repo/a.ts' })
     expect((await ui.find({ type: 'Text', text: /^\/repo\/a\.ts$/ }))?.text).toBe('/repo/a.ts')
     expect((await ui.find({ type: 'Text', text: /^hello$/ }))?.text).toBe('hello')
     await ui.press({ key: 'back' })
-    expect(await ui.find({ key: 'file:a.ts' })).toBeDefined()
+    expect(await ui.find({ key: 'node:/repo/a.ts' })).toBeDefined()
 
     await ui.press({ key: 'wt:/repo-wt' })
-    expect((await ui.find({ type: 'Text', text: /^\/repo-wt$/ }))?.text).toBe('/repo-wt')
+    expect((await ui.find({ key: 'node:/repo-wt/wt.txt' }))?.text).toBe('└── wt.txt')
     await ui.press({ key: 'cwd' })
     await ui.unmount()
   }
@@ -148,7 +194,7 @@ test('clicking a binary file says so instead of drawing nothing', async ($, on) 
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'file:.DS_Store' })
+  await ui.press({ key: 'node:/plain/.DS_Store' })
   expect((await ui.find({ type: 'Text', text: /binary file/ }))?.text).toBe(
     '(binary file, nothing to preview)',
   )
@@ -184,7 +230,7 @@ test('a file over the read cap pages through, more-style', async ($, on) => {
   await $.session.start({ cwd: '/plain', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'file:big.log' })
+  await ui.press({ key: 'node:/plain/big.log' })
   expect((await ui.find({ type: 'Text', text: /^alpha$/ }))?.text).toBe('alpha')
   expect((await ui.find({ type: 'Text', text: /1\/6/ }))?.text).toContain('1/6')
   expect(await ui.find({ key: 'prev' })).toBeUndefined()

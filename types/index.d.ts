@@ -12,9 +12,10 @@ declare module 'claude-code' {
   interface PluginState {
     'worktree-panel': {
       worktrees: Worktree[]
-      files: FileEntry[]
       gitError: string
-      dir: string
+      treeRoot: string
+      tree: Record<string, FileEntry[]>
+      expanded: string[]
       preview: Preview | null
     }
   }

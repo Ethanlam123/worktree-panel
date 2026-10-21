@@ -8,10 +8,12 @@ const TITLE = 'Worktrees & files'
 const REFRESH_MS = 2000
 
 const worktrees = atom({ plugin: 'worktree-panel', key: 'worktrees' } as const, [] as Worktree[])
-const files = atom({ plugin: 'worktree-panel', key: 'files' } as const, [] as FileEntry[])
 const gitError = atom({ plugin: 'worktree-panel', key: 'gitError' } as const, '')
 // '' means the session's working directory
-const dir = atom({ plugin: 'worktree-panel', key: 'dir' } as const, '')
+const treeRoot = atom({ plugin: 'worktree-panel', key: 'treeRoot' } as const, '')
+// dir path -> its sorted entries
+const tree = atom({ plugin: 'worktree-panel', key: 'tree' } as const, {} as Record<string, FileEntry[]>)
+const expanded = atom({ plugin: 'worktree-panel', key: 'expanded' } as const, [] as string[])
 const preview = atom({ plugin: 'worktree-panel', key: 'preview' } as const, null as Preview | null)
 
 // cwd is the worktree itself, or a folder under it
@@ -36,7 +38,16 @@ const parseWorktrees = (porcelain: string, cwd: string): Worktree[] =>
     .filter(w => w.path !== '')
 
 const at = ($: EngineInterface): Promise<string> =>
-  read($, dir).then(chosen => (chosen === '' ? $.session.cwd() : chosen))
+  read($, treeRoot).then(chosen => (chosen === '' ? $.session.cwd() : chosen))
+
+// directories first, then files, each alphabetical
+const sortEntries = (entries: readonly FileEntry[]): FileEntry[] =>
+  [...entries].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
+
+const listDir = async ($: EngineInterface, path: string): Promise<FileEntry[]> => {
+  const entries = await $.fs.list(path).catch(() => [])
+  return sortEntries(entries.map(e => ({ name: e.name, kind: e.kind })))
+}
 
 const refreshWorktrees = async ($: EngineInterface) => {
   const cwd = await $.session.cwd()
@@ -52,26 +63,36 @@ const refreshWorktrees = async ($: EngineInterface) => {
   }
 }
 
-const refreshFiles = async ($: EngineInterface) => {
-  const path = await at($)
-  const entries = await $.fs.list(path).catch(() => [])
-  // 'dir' sorts before 'file' before 'other': directories first
-  await update($, files, () =>
-    [...entries].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name)),
-  )
+// re-list the root and every expanded folder
+const refreshTree = async ($: EngineInterface) => {
+  const root = await at($)
+  const openDirs = [root, ...(await read($, expanded))]
+  const next: Record<string, FileEntry[]> = {}
+  for (const path of openDirs) {
+    next[path] = await listDir($, path)
+  }
+  await update($, tree, () => next)
 }
 
 const refresh = async ($: EngineInterface) => {
   await refreshWorktrees($)
-  await refreshFiles($)
+  await refreshTree($)
 }
 
-// a click on a folder or a worktree: list that directory
-const browse = async ($: EngineInterface, path: string) => {
+// a click on a worktree or Session dir: re-root the tree there
+const reroot = async ($: EngineInterface, path: string) => {
   const cwd = await $.session.cwd()
   await update($, preview, () => null)
-  await update($, dir, () => (path === cwd ? '' : path))
-  await refreshFiles($)
+  await update($, expanded, () => [])
+  await update($, treeRoot, () => (path === cwd ? '' : path))
+  await refreshTree($)
+}
+
+// a click on a folder: expand or collapse it in the tree
+const toggle = async ($: EngineInterface, path: string) => {
+  const isOpen = (await read($, expanded)).includes(path)
+  await update($, expanded, list => (isOpen ? list.filter(p => p !== path) : [...list, path]))
+  await refreshTree($)
 }
 
 // a click on a file: show its content in the pane
@@ -138,6 +159,9 @@ const openPreview = async ($: EngineInterface, path: string, page = 1) => {
   }
 }
 
+// one row of the tree, ready to draw
+type Row = { path: string; label: string; isDir: boolean }
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -165,21 +189,20 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const trees = await read($, worktrees)
-    const entries = await read($, files)
     const error = await read($, gitError)
     const shown = await read($, preview)
-    const chosen = await read($, dir)
+    const chosen = await read($, treeRoot)
     const cwd = await $.session.cwd()
-    const path = chosen === '' ? cwd : chosen
+    const root = chosen === '' ? cwd : chosen
     const room = Math.max(1, (e.viewport?.rows ?? 24) - 8)
+    // a wrapped line is two rows: cut to the pane's width so a page keeps its height
+    const width = Math.max(10, (e.props.bodyColumns ?? e.viewport?.columns ?? 80) - 2)
+    const fit = (line: string): string =>
+      line.length > width ? line.slice(0, width - 1) + '~' : line === '' ? ' ' : line
 
     if (shown !== null) {
       const lines = shown.content.split('\n')
       const pages = Math.max(1, Math.ceil(shown.totalLines / PAGE_LINES))
-      // a wrapped line is two rows: cut to the pane's width so a page keeps its height
-      const width = Math.max(10, (e.props.bodyColumns ?? e.viewport?.columns ?? 80) - 2)
-      const fit = (line: string): string =>
-        line.length > width ? line.slice(0, width - 1) + '~' : line === '' ? ' ' : line
       return (
         <Box flexDirection="column">
           <Box justifyContent="space-between">
@@ -224,6 +247,27 @@ export const register: Register = on => {
       )
     }
 
+    const treeMap = await read($, tree)
+    const open = new Set(await read($, expanded))
+    const rows: Row[] = []
+    const walk = (dirPath: string, ancestry: readonly boolean[]): void => {
+      const entries = treeMap[dirPath] ?? []
+      entries.forEach((entry, i) => {
+        const isLast = i === entries.length - 1
+        const childPath = dirPath + '/' + entry.name
+        const stem = ancestry.map(wasLast => (wasLast ? '    ' : '│   ')).join('')
+        rows.push({
+          path: childPath,
+          label: stem + (isLast ? '└── ' : '├── ') + entry.name + (entry.kind === 'dir' ? '/' : ''),
+          isDir: entry.kind === 'dir',
+        })
+        if (entry.kind === 'dir' && open.has(childPath)) {
+          walk(childPath, [...ancestry, isLast])
+        }
+      })
+    }
+    walk(root, [])
+
     return (
       <Box flexDirection="column">
         <Box justifyContent="space-between">
@@ -235,7 +279,7 @@ export const register: Register = on => {
         {error !== '' && <Text dimColor>{error}</Text>}
         {error === '' &&
           trees.map(w => (
-            <Button key={'wt:' + w.path} onPress={() => void browse($, w.path)}>
+            <Button key={'wt:' + w.path} onPress={() => void reroot($, w.path)}>
               {w.isCurrent ? '* ' : '  '}
               {w.branch || w.head} <Text dimColor>{w.path}</Text>
             </Button>
@@ -244,23 +288,23 @@ export const register: Register = on => {
           <Box justifyContent="space-between">
             <Text bold>Files</Text>
             {chosen !== '' && (
-              <Button key="cwd" onPress={() => void browse($, cwd)}>
+              <Button key="cwd" onPress={() => void reroot($, cwd)}>
                 Session dir
               </Button>
             )}
           </Box>
-          <Text dimColor>{path}</Text>
-          {entries.slice(0, room).map(f =>
-            f.kind === 'dir' ? (
-              <Button key={'dir:' + f.name} onPress={() => void browse($, path + '/' + f.name)}>
-                {f.name}/
-              </Button>
-            ) : (
-              <Button key={'file:' + f.name} onPress={() => void openPreview($, path + '/' + f.name)}>
-                {f.name}
-              </Button>
-            ),
-          )}
+          <Text dimColor>{root}</Text>
+          {rows.slice(0, room).map(r => (
+            <Button
+              plain
+              key={'node:' + r.path}
+              dimColor={!r.isDir}
+              onPress={() => (r.isDir ? void toggle($, r.path) : void openPreview($, r.path))}
+            >
+              {fit(r.label)}
+            </Button>
+          ))}
+          {rows.length > room && <Text dimColor>... {rows.length - room} more</Text>}
         </Box>
       </Box>
     )
